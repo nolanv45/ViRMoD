@@ -4,7 +4,7 @@ include { HDBSCAN_TSV } from '../../../modules/local/hdbscan_tsv'
 include { HDBSCAN_VISUALS } from '../../../modules/local/hdbscan_visuals'
 include { PLOT_GENOFEATURE_CENTRIC } from '../../../modules/local/plot_genofeature_centric'
 include { TILE_GENOFEATURE_CENTRIC } from '../../../modules/local/tile_genofeature_centric'
-include { MODULE_FILE } from '../../../modules/local/module_file'
+include { IDENTIFY_REP_MODULES } from '../../../modules/local/identify_rep_modules'
 workflow REP_MODULE_ANALYSIS {
     take:
         ch_combined_tsv
@@ -12,11 +12,11 @@ workflow REP_MODULE_ANALYSIS {
     main:
     ch_metadata = channel.fromPath(params.genofeature_metadata)
 
-    MODULE_FILE(
+    IDENTIFY_REP_MODULES(
         ch_combined_tsv,
         ch_metadata
     )
-    ch_module_file = MODULE_FILE.out.module_file
+    ch_module_file = IDENTIFY_REP_MODULES.out.module_file
 
     def excluded_genofeatures = params.excluded_genofeatures.collect { feature -> "\'${feature}\'" }.join(', ')
     def final_nn = "${params.final_nn}"
@@ -71,7 +71,7 @@ workflow REP_MODULE_ANALYSIS {
     ch_multiqc_files = ch_multiqc_files.mix(ch_genofeature_centric.tiled)
 
     ch_versions = channel.empty()
-    ch_versions = ch_versions.mix(MODULE_FILE.out.versions)
+    ch_versions = ch_versions.mix(IDENTIFY_REP_MODULES.out.versions)
     ch_versions = ch_versions.mix(GENERATE_COORDINATES.out.versions)
     ch_versions = ch_versions.mix(MODIFY_CLUSTERS.out.versions)
     ch_versions = ch_versions.mix(HDBSCAN_TSV.out.versions)

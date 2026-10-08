@@ -109,7 +109,8 @@ workflow EMBEDDING_PARAMETER_DECISION {
 
     ch_umap = TILE_UMAPS(
         ch_plot_umap.plot.collect(),
-        ch_metadata
+        ch_filtered_tsv.first(),
+        ch_metadata.first()
     )
 
 

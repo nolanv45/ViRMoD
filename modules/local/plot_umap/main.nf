@@ -44,6 +44,7 @@ try:
 
     colors = []
     markers = []
+
     for eid in embedding_ids:
         genofeature = module_df.loc[module_df["normalized_orf_id"] == eid, "genofeature"].iloc[0] if eid in module_df["normalized_orf_id"].values else None
         if genofeature is not None and genofeature in metadata_df["genofeature"].values:
