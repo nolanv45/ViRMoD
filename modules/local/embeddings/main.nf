@@ -4,8 +4,8 @@ process EMBEDDINGS {
     label 'process_gpu'
     conda "${moduleDir}/environment.yml"
     container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
-        'oras://community.wave.seqera.io/library/python_pytorch_pytorch-cuda_numpy_pruned:ad3ebbc11c68a271' :
-        'community.wave.seqera.io/library/python_pytorch_pytorch-cuda_numpy_pruned:746f583b86cbc105' }"
+        'oras://community.wave.seqera.io/library/python_cuda-version_pytorch-gpu_numpy_pruned:6cb10e4e14d87a88' :
+        'community.wave.seqera.io/library/python_cuda-version_pytorch-gpu_numpy_pruned:d188494e4731d8ad' }"
     
     input:
         tuple val(dataset), val(protein), val(genofeature), path(fasta)
