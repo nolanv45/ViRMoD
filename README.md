@@ -31,17 +31,6 @@ This repository hosts an automated pipeline built with Nextflow which identifies
 <!-- TODO nf-core: Describe the minimum required steps to execute the pipeline, e.g. how to prepare samplesheets.
      Explain what rows and columns represent. For instance (please edit as appropriate):
 
-First, prepare a samplesheet with your input data that looks as follows:
-
-`samplesheet.csv`:
-
-```csv
-sample,fastq_1,fastq_2
-CONTROL_REP1,AEG588A1_S1_L002_R1_001.fastq.gz,AEG588A1_S1_L002_R2_001.fastq.gz
-```
-
-Each row represents a fastq file (single-end) or a pair of fastq files (paired end).
-
 -->
 
 Now, you can run the pipeline using:
@@ -51,7 +40,6 @@ Now, you can run the pipeline using:
 ```bash
 nextflow run VEIL/veilpipeline \
    -profile <docker/singularity/.../institute> \
-   --input samplesheet.csv \
    --outdir <OUTDIR>
 ```
 
@@ -60,7 +48,7 @@ nextflow run VEIL/veilpipeline \
 
 ## Credits
 
-VEIL/veilpipeline was originally written by Nolan Vasil.
+ViRMoD was originally written by Nolan Vasil.
 
 We thank the following people for their extensive assistance in the development of this pipeline:
 
