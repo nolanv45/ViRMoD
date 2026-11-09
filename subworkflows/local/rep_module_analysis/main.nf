@@ -22,12 +22,20 @@ workflow REP_MODULE_ANALYSIS {
     def final_nn = "${params.final_nn}"
     def final_md = "${params.final_md}"
     def final_md_tag = String.format('%.1f', params.final_md as Double).replace('.', 'p')
-    ch_generate_coordinates_inputs = channel.of(
-        tuple(["${params.outdir}/embeddings"], excluded_genofeatures, final_nn, final_md, "05_final_analysis/coordinates/nn${final_nn}_md${final_md_tag}")
-    )
+    ch_embedding_dirs = channel
+        .fromPath("${params.outdir}/embeddings/*/*/*", type: 'dir', checkIfExists: true)
+        .collect()
 
-
-
+    ch_generate_coordinates_inputs = ch_embedding_dirs.map { dirs ->
+        tuple(
+            dirs,
+            excluded_genofeatures,
+            final_nn,
+            final_md,
+            "05_final_analysis/coordinates/nn${final_nn}_md${final_md_tag}",
+            "${params.outdir}/combined_datasets.tsv"
+        )
+    }
 
     GENERATE_COORDINATES(ch_generate_coordinates_inputs)
     ch_coordinates_dir = GENERATE_COORDINATES.out.coordinates_files

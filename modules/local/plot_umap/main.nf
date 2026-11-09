@@ -8,8 +8,8 @@ process PLOT_UMAP {
     
     input:
         tuple val(nn), val(md_tag), path(coord_file), path(conns_file)
-        path filtered_tsv    // TSV file with metadata
-        path metadata_file   // Metadata file with colors/markers
+        path filtered_tsv    // TSV file mapping ORFs to genofeatures
+        path umap_coloring_metadata   // Metadata file with colors/markers
         
     output:
         path "umap_nn${nn}_md${md_tag}.png", emit: plot
@@ -19,77 +19,87 @@ process PLOT_UMAP {
 #!/usr/bin/env python3
 import os
 os.environ.setdefault('MPLCONFIGDIR', '/tmp/matplotlib')
+from collections import defaultdict
 import numpy as np
 import matplotlib
 matplotlib.use('Agg') 
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 import pandas as pd
 
-module_df = pd.read_csv("${filtered_tsv}", sep='\\t')
-metadata_df = pd.read_csv("${metadata_file}", sep='\\t')
+GRAY = "#808080"
 
-coord_file = "${coord_file}"
-conns_file = "${conns_file}"
+module_df = pd.read_csv("${filtered_tsv}", sep='\\t')
+umap_coloring_metadata_df = pd.read_csv("${umap_coloring_metadata}", sep='\\t')
+coord_df = pd.read_csv("${coord_file}", sep='\\t')
+connections_df = pd.read_csv("${conns_file}", sep='\\t')
 output_file = "umap_nn${nn}_md${md_tag}.png"
 
-try:
-    coord_df = pd.read_csv(coord_file, sep='\\t')
-    embedding_ids = coord_df['embedding_id'].tolist()
-    embedding_2d = coord_df[['x', 'y']].values
+embedding_ids = coord_df['embedding_id'].tolist()
+embedding_2d = coord_df[['x', 'y']].values
+print(f"Loaded {len(embedding_ids)} points, shape {embedding_2d.shape}")
 
-    print(f"Loaded coordinates from {coord_file}")
-    print(f"Shape: {embedding_2d.shape}, IDs: {len(embedding_ids)}")
+# Lookups built once
+module_df["normalized_orf_id"] = module_df["orf_id"].str.replace(".", "-", regex=False)
+orf_to_geno = (module_df.drop_duplicates("normalized_orf_id")
+               .set_index("normalized_orf_id")["genofeature"].to_dict())
+genofeature_styles = (
+    umap_coloring_metadata_df.drop_duplicates("genofeature")
+    .set_index("genofeature")[["color", "marker"]].to_dict("index")
+)
 
-    module_df["normalized_orf_id"] = module_df["orf_id"].str.replace(".", "-", regex=False)
-
-    colors = []
-    markers = []
-
-    for eid in embedding_ids:
-        genofeature = module_df.loc[module_df["normalized_orf_id"] == eid, "genofeature"].iloc[0] if eid in module_df["normalized_orf_id"].values else None
-        if genofeature is not None and genofeature in metadata_df["genofeature"].values:
-            color = metadata_df.loc[metadata_df["genofeature"] == genofeature, "color"].iloc[0]
-            marker = metadata_df.loc[metadata_df["genofeature"] == genofeature, "marker"].iloc[0]
-        else:
-            color = "#808080"
-            marker = "."
-        colors.append(color)
-        markers.append(marker if pd.notna(marker) else ".")
-
-    connections_df = pd.read_csv(conns_file, sep='\\t')
-    if not connections_df.empty:
-        print(f"Loaded {len(connections_df)} connections")
-        id_to_idx = {eid: idx for idx, eid in enumerate(embedding_ids)}
-        connections = []
-        for _, row in connections_df.iterrows():
-            if row['id1'] in id_to_idx and row['id2'] in id_to_idx:
-                connections.append([id_to_idx[row['id1']], id_to_idx[row['id2']]])
-        connections = np.array(connections)
+# Style per point
+styles = []
+n_unstyled = 0
+for eid in embedding_ids:
+    m = genofeature_styles.get(orf_to_geno.get(eid))
+    if m is None:
+        n_unstyled += 1
+        styles.append((GRAY, "."))
     else:
-        connections = []
-        print("connections.tsv present but empty")
+        color = m["color"] if pd.notna(m["color"]) else GRAY
+        marker = m["marker"] if pd.notna(m["marker"]) else "."
+        styles.append((color, marker))
+print(f"{n_unstyled} points had no genofeature/metadata match (drawn gray)")
 
-    fig, ax = plt.subplots(figsize=(10, 10))
+# Connections
+id_to_idx = {eid: i for i, eid in enumerate(embedding_ids)}
+pairs = [(id_to_idx[a], id_to_idx[b])
+         for a, b in zip(connections_df['id1'], connections_df['id2'])
+         if a in id_to_idx and b in id_to_idx]
+print(f"Using {len(pairs)} of {len(connections_df)} connections")
 
-    if len(connections) > 0:
-        for conn in connections:
-            x_coords = [embedding_2d[conn[0]][0], embedding_2d[conn[1]][0]]
-            y_coords = [embedding_2d[conn[0]][1], embedding_2d[conn[1]][1]]
-            ax.plot(x_coords, y_coords, color='#CCCCCC', alpha=0.5, linewidth=0.2, zorder=1)
+fig, ax = plt.subplots(figsize=(10, 10))
 
-    for coord, color, marker in zip(embedding_2d, colors, markers):
-        ax.scatter(coord[0], coord[1], c=color, marker=marker, s=10, alpha=0.7)
+if pairs:
+    segs = embedding_2d[np.array(pairs)]  # (n_conns, 2, 2)
+    ax.add_collection(LineCollection(segs, colors='#CCCCCC', alpha=0.5,
+                                     linewidths=0.2, zorder=1))
 
-    ax.set_xticks([])
-    ax.set_yticks([])
-    plt.grid(False)
+# One scatter per (color, marker); gray first so colored points sit on top
+groups = defaultdict(list)
+for i, s in enumerate(styles):
+    groups[s].append(i)
 
-    plt.savefig(output_file, dpi=600, bbox_inches="tight")
-    plt.close()
+for (color, marker), idx in sorted(groups.items(), key=lambda kv: kv[0][0] != GRAY, reverse=False):
+    pts = embedding_2d[idx]
+    ax.scatter(pts[:, 0], pts[:, 1], color=color, marker=marker,
+               s=10, alpha=0.7, zorder=2)
 
-except Exception as e:
-    print(f"Error processing plot: {e}")
-    print("Available columns in metadata_df:", metadata_df.columns.tolist())
-    raise
+# removed autoscale since it can distort the aspect ratio
+# Equal scale on both axes, centered in a square frame
+x, y = embedding_2d[:, 0], embedding_2d[:, 1]
+cx, cy = (x.min() + x.max()) / 2, (y.min() + y.max()) / 2
+half = max(x.max() - x.min(), y.max() - y.min()) / 2 * 1.05
+
+ax.set_xlim(cx - half, cx + half)
+ax.set_ylim(cy - half, cy + half)
+ax.set_aspect('equal')
+ax.set_xticks([])
+ax.set_yticks([])
+ax.grid(False)
+
+fig.savefig(output_file, dpi=600, bbox_inches="tight")
+plt.close(fig)
     """
 }

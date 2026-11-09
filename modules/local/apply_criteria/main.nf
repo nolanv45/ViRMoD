@@ -18,7 +18,7 @@ process APPLY_CRITERIA {
         path("versions.yml"), emit: versions
     script:
     def pasv_proteins_json = groovy.json.JsonOutput.toJson(params.pasv_proteins ?: [])
-    def orf_drop = params.orf_coord_fields[meta.id] ?: -1
+    def orf_drop = params.orf_coord_fields[meta.id] ?: 0
 
     """
 #!/usr/bin/env python3
@@ -37,11 +37,14 @@ df = df[df["PHIDRA"] == "Yes"]
 pasv_mask = df["Protein"].isin(pasv_proteins)
 df = df[~pasv_mask | (df["PASV"] == "Yes")]
 
-# Parse contig_id and orf_id from Query_ID using orf_coord_fields
+# Parse contig_id and orf_id from Query_ID using orf_coord_fields. If not listed in orf_coord_fields, use the entire Query_ID as contig_id and orf_id.
 df["orf_id"] = df["Query_ID"]
-df["contig_id"] = df["Query_ID"].apply(
-    lambda x: "_".join(x.split("_")[:orf_drop])
-)
+if orf_drop == 0:
+    df["contig_id"] = df["Query_ID"]
+else:
+    df["contig_id"] = df["Query_ID"].apply(
+        lambda x: "_".join(x.split("_")[:orf_drop])
+    )
 
 # Output with required columns
 df[["contig_id", "orf_id", "Genofeature", "Protein", "Dataset"]].rename(columns={

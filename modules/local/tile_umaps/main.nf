@@ -1,57 +1,124 @@
 process TILE_UMAPS {
-    publishDir "${params.outdir}/04_parameter_selection/umap", mode: 'copy'
+    publishDir "${params.outdir}/04_parameter_selection/umap",
+        mode: 'copy',
+        saveAs: { filename ->
+            // individual UMAP plots are published as umap/plots/, next to the tiled image
+            if (filename == "individual_plots") "plots"
+            else if (filename.startsWith("individual_plots/")) "plots/" + filename.substring("individual_plots/".length())
+            else filename
+        }
     label "process_medium"
     conda "${moduleDir}/environment.yml"
     container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
         'oras://community.wave.seqera.io/library/python_numpy_pandas_matplotlib_pillow:bc19f6df598f92e8' :
         'community.wave.seqera.io/library/python_numpy_pandas_matplotlib_pillow:352bfae9d89bced3' }"
-    
+
     input:
         path 'plots/*'
-        path filtered_tsv
-        path metadata_file
-        
+        path 'filtered.tsv'
+        path 'metadata.tsv'
+
     output:
-        path "tiled_image.png", emit: tiled_image
-        path "versions.yml", emit: versions
+        path "tiled_image.png",  emit: tiled_image
+        path "individual_plots", emit: plots
+        path "versions.yml",    emit: versions
 
     script:
     """
 #!/usr/bin/env python3
 
 import os
-import math
+import re
+import shutil
+import sys
 
-os.environ.setdefault('MPLCONFIGDIR', '/tmp/matplotlib')
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')
-
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
-from PIL import Image
+import PIL
+from PIL import Image, ImageDraw, ImageFont
+
+Image.MAX_IMAGE_PIXELS = None
+
+PLOT_DIR = "plots"
+OUTPUT_FILE = "tiled_image.png"
+PLOT_OUT_DIR = "individual_plots"
+PADDING = 50
+
+# Matches umap_nn<NN>_md<MD>.png where MD is e.g. 0p1 (same convention as TILE_HDBSCAN)
+FILENAME_RE = re.compile(r"umap_nn(\\d+)_md(\\d+p?\\d*)\\.png")
+
+
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+def load_font(size):
+    # Prefer the DejaVu font bundled with matplotlib (always present in this container)
+    candidates = [
+        os.path.join(matplotlib.get_data_path(), "fonts", "ttf", "DejaVuSans-Bold.ttf"),
+        "${projectDir}/fonts/DejaVuSans-Bold.ttf",
+        "DejaVuSans-Bold.ttf",
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def require_columns(df, columns, name):
+    missing = [c for c in columns if c not in df.columns]
+    if missing:
+        sys.exit(
+            f"ERROR: {name} is missing required column(s): {', '.join(missing)}. "
+            f"Columns found: {', '.join(map(str, df.columns))}"
+        )
+
+
+def collect_plots(plot_dir):
+    plot_files = {}
+    for filename in sorted(os.listdir(plot_dir)):
+        match = FILENAME_RE.fullmatch(filename)
+        if match is None:
+            print(f"Skipping unrecognised file: {filename}")
+            continue
+        nn = int(match.group(1))
+        md = float(match.group(2).replace("p", "."))
+        plot_files[(nn, md)] = os.path.join(plot_dir, filename)
+
+    if not plot_files:
+        sys.exit("ERROR: No UMAP plot images (umap_nn*_md*.png) found in " + plot_dir)
+    return plot_files
+
+
+def copy_plots(plot_files, out_dir):
+    # Copy (not link) the individual plots so the published directory holds real files
+    os.makedirs(out_dir, exist_ok=True)
+    for path in plot_files.values():
+        shutil.copy2(path, os.path.join(out_dir, os.path.basename(path)))
 
 
 def build_legend_handles(filtered_df, metadata_df):
+    # Only genofeatures actually present in the filtered data get a legend entry
+    present = set(filtered_df["genofeature"].dropna().unique())
 
-    # Find genofeatures actually present in the filtered data
-    present = set(
-        filtered_df["genofeature"]
-        .dropna()
-        .unique()
-    )
-
-    # Keep only metadata for those genofeatures
     metadata = (
-        metadata_df[
-            metadata_df["genofeature"].isin(present)
-        ]
+        metadata_df[metadata_df["genofeature"].isin(present)]
         .drop_duplicates("genofeature")
-        .sort_values("genofeature")
     )
 
-    # Create one legend handle per genofeature
+    missing = present - set(metadata["genofeature"])
+    if missing:
+        print("WARNING: no metadata for genofeature(s): " + ", ".join(sorted(map(str, missing))))
+
     return [
         mlines.Line2D(
             [],
@@ -66,15 +133,17 @@ def build_legend_handles(filtered_df, metadata_df):
     ]
 
 
-def render_legend(legend_handles, height):
+def render_legend(legend_handles, target_height_px, font_size):
+    # Make the figure tall enough for every entry (labelspacing=2.0 -> ~3.2 lines per entry)
+    needed_in = (len(legend_handles) * font_size * 3.0 + font_size * 3) / 72
+    fig_height = max(target_height_px / 100, needed_in, 4)
 
-    fig_height = max(height / 100, 4)
+    # Scale the legend icons with the text (font_size is in points)
+    for handle in legend_handles:
+        handle.set_markersize(font_size)
+        handle.set_markeredgewidth(font_size * 0.2)
 
-    fig, ax = plt.subplots(
-        figsize=(8, fig_height),
-        dpi=100
-    )
-
+    fig, ax = plt.subplots(figsize=(8, fig_height), dpi=100)
     ax.axis("off")
 
     ax.legend(
@@ -83,190 +152,156 @@ def render_legend(legend_handles, height):
         loc="center left",
         bbox_to_anchor=(0, 0.5),
         frameon=False,
-        fontsize=30,
-        title_fontsize=36,
+        fontsize=font_size,
+        title_fontsize=font_size,
         borderaxespad=2,
-        labelspacing=2.0,
-        handlelength=4,
-        handleheight=4,
-        markerscale=4,
+        labelspacing=1.0,
+        handlelength=2,
+        handleheight=1.5,
+        handletextpad=0.8,
     )
 
-    fig.tight_layout()
-
-    legend_path = "legend.png"
-
-    fig.savefig(
-        legend_path,
-        bbox_inches="tight",
-        transparent=True,
-    )
-
+    fig.savefig("legend.png", bbox_inches="tight", transparent=True)
     plt.close(fig)
+    return Image.open("legend.png").convert("RGBA")
 
-    return Image.open(legend_path).convert("RGBA")
 
-
-def tile_images(plot_dir, output_file, legend_handles):
-
-    image_files = sorted(
-        os.path.join(plot_dir, filename)
-        for filename in os.listdir(plot_dir)
-        if filename.endswith(".png")
+def draw_rotated_text(canvas, text, font, center, fill="black"):
+    left, top, right, bottom = font.getbbox(text)
+    w, h = right - left, bottom - top
+    layer = Image.new("RGBA", (w + 20, h + 20), (255, 255, 255, 0))
+    ImageDraw.Draw(layer).text((10 - left, 10 - top), text, fill=fill, font=font)
+    layer = layer.rotate(90, expand=True)
+    canvas.paste(
+        layer,
+        (center[0] - layer.width // 2, center[1] - layer.height // 2),
+        layer,
     )
 
-    if not image_files:
-        raise RuntimeError("No UMAP plot images found.")
 
-    images = [
-        Image.open(path).convert("RGBA")
-        for path in image_files
-    ]
+# ----------------------------------------------------------------------------
+# Tiling
+# ----------------------------------------------------------------------------
+def tile_images(plot_files, legend_handles, output_file, padding=PADDING):
+    nn_values = sorted({nn for nn, _ in plot_files})
+    md_values = sorted({md for _, md in plot_files})
+    images = {key: Image.open(path).convert("RGBA") for key, path in plot_files.items()}
 
-    # Make every tile the same size
-    tile_width = max(img.width for img in images)
-    tile_height = max(img.height for img in images)
+    # Every cell is the size of the largest plot; smaller plots are centred in their cell
+    tile_w = max(img.width for img in images.values())
+    tile_h = max(img.height for img in images.values())
 
-    normalized = []
+    n_cols = len(md_values)
+    n_rows = len(nn_values)
+    grid_w = n_cols * tile_w + (n_cols - 1) * padding
+    grid_h = n_rows * tile_h + (n_rows - 1) * padding
 
-    for img in images:
+    # The legend is sized in points at 100 dpi and PIL text in pixels, so convert
+    # to make the axis titles and labels the same size as the legend text
+    legend_pt = max(48, min(120, tile_w // 50))
+    label_size = round(legend_pt * 100 / 72)
+    font = load_font(label_size)
 
-        canvas = Image.new(
-            "RGBA",
-            (tile_width, tile_height),
-            (255, 255, 255, 255),
-        )
+    # Margins: left holds rotated axis title + row labels, top holds axis title + column labels
+    left_margin = label_size * 6
+    top_margin = int(label_size * 4.5)
+    bottom_margin = label_size
 
-        x = (tile_width - img.width) // 2
-        y = (tile_height - img.height) // 2
+    grid_x = left_margin
+    grid_y = top_margin
 
-        canvas.paste(
-            img,
-            (x, y),
-            img,
-        )
-
-        normalized.append(canvas)
-
-    # Determine grid dimensions
-    n_images = len(normalized)
-    n_cols = math.ceil(math.sqrt(n_images))
-    n_rows = math.ceil(n_images / n_cols)
-
-    grid_width = n_cols * tile_width
-    grid_height = n_rows * tile_height
-
-    grid = Image.new(
+    canvas = Image.new(
         "RGBA",
-        (grid_width, grid_height),
-        (255, 255, 255, 255),
+        (left_margin + grid_w, top_margin + grid_h + bottom_margin),
+        "white",
+    )
+    draw = ImageDraw.Draw(canvas)
+
+    # Axis titles
+    draw.text(
+        (grid_x + grid_w // 2, label_size),
+        "Minimum Distance (md)",
+        fill="black",
+        font=font,
+        anchor="mm",
+    )
+    draw_rotated_text(
+        canvas,
+        "Nearest Neighbors (nn)",
+        font,
+        (label_size, grid_y + grid_h // 2),
     )
 
-    # Place each plot into the grid
-    for i, img in enumerate(normalized):
-
-        row = i // n_cols
-        col = i % n_cols
-
-        grid.paste(
-            img,
-            (
-                col * tile_width,
-                row * tile_height,
-            ),
-            img,
+    # Column labels (md) and row labels (nn)
+    for col, md in enumerate(md_values):
+        draw.text(
+            (grid_x + col * (tile_w + padding) + tile_w // 2, label_size * 3),
+            f"md={md:.1f}",
+            fill="black",
+            font=font,
+            anchor="mm",
+        )
+    for row, nn in enumerate(nn_values):
+        draw.text(
+            (int(label_size * 3.6), grid_y + row * (tile_h + padding) + tile_h // 2),
+            f"nn={nn}",
+            fill="black",
+            font=font,
+            anchor="mm",
         )
 
-    # Create one legend for the entire figure
-    legend = render_legend(
-        legend_handles,
-        grid_height,
-    )
+    # Plots: rows = nn (ascending, top to bottom), columns = md (ascending, left to right)
+    for (nn, md), img in images.items():
+        row = nn_values.index(nn)
+        col = md_values.index(md)
+        x = grid_x + col * (tile_w + padding) + (tile_w - img.width) // 2
+        y = grid_y + row * (tile_h + padding) + (tile_h - img.height) // 2
+        canvas.paste(img, (x, y), img)
 
-    legend_width = legend.width
-    padding = 50
+    # Legend on the right, vertically centred on the plot grid
+    if legend_handles:
+        legend = render_legend(legend_handles, grid_h, legend_pt)
+        final_w = canvas.width + padding + legend.width
+        final_h = max(canvas.height, legend.height)
+        final = Image.new("RGBA", (final_w, final_h), "white")
+        final.paste(canvas, (0, 0), canvas)
+        legend_y = max(0, grid_y + grid_h // 2 - legend.height // 2)
+        final.paste(legend, (canvas.width + padding, legend_y), legend)
+    else:
+        print("WARNING: no legend entries found; writing tiles without a legend")
+        final = canvas
 
-    final = Image.new(
-        "RGBA",
-        (
-            grid_width + legend_width + padding,
-            grid_height,
-        ),
-        (255, 255, 255, 255),
-    )
-
-    final.paste(
-        grid,
-        (0, 0),
-        grid,
-    )
-
-    # Center legend vertically
-    legend_y = max(
-        0,
-        (grid_height - legend.height) // 2,
-    )
-
-    final.paste(
-        legend,
-        (
-            grid_width + padding,
-            legend_y,
-        ),
-        legend,
-    )
-
-    final.convert("RGB").save(
-        output_file,
-        dpi=(300, 300),
-    )
+    final.convert("RGB").save(output_file, dpi=(300, 300))
+    print(f"Saved {output_file} ({final.width} x {final.height}px, {len(images)} tiles)")
 
 
 def write_versions(output_file):
-
     with open(output_file, "w") as f:
-        f.write("TILE_UMAPS:\\\\n")
-        f.write(
-            "  python: %s\\\\n"
-            % __import__("sys").version.split()[0]
-        )
-        f.write(
-            "  pandas: %s\\\\n"
-            % pd.__version__
-        )
-        f.write(
-            "  matplotlib: %s\\\\n"
-            % matplotlib.__version__
-        )
+        f.write('"${task.process}":\\n')
+        f.write(f"    python: {sys.version.split()[0]}\\n")
+        f.write(f"    pandas: {pd.__version__}\\n")
+        f.write(f"    matplotlib: {matplotlib.__version__}\\n")
+        f.write(f"    pillow: {PIL.__version__}\\n")
 
 
-# Read input files
-filtered_df = pd.read_csv(
-    "${filtered_tsv}",
-    sep="\\t",
-)
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+def main():
+    filtered_df = pd.read_csv("filtered.tsv", sep="\\t")
+    metadata_df = pd.read_csv("metadata.tsv", sep="\\t")
 
-metadata_df = pd.read_csv(
-    "${metadata_file}",
-    sep="\\t",
-)
+    require_columns(filtered_df, ["genofeature"], "filtered.tsv")
+    require_columns(metadata_df, ["genofeature", "color", "marker", "display_name"], "metadata.tsv")
 
-# Build legend from genofeatures actually present
-legend_handles = build_legend_handles(
-    filtered_df,
-    metadata_df,
-)
+    legend_handles = build_legend_handles(filtered_df, metadata_df)
+    plot_files = collect_plots(PLOT_DIR)
+    copy_plots(plot_files, PLOT_OUT_DIR)
 
-# Tile plots and add legend
-tile_images(
-    "plots",
-    "tiled_image.png",
-    legend_handles,
-)
+    tile_images(plot_files, legend_handles, OUTPUT_FILE)
+    write_versions("versions.yml")
 
-# Record software versions
-write_versions(
-    "versions.yml",
-)
+
+main()
     """
 }

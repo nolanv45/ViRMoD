@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 
 def save_placeholder(output_file, title, message):
@@ -46,6 +47,51 @@ if 'genofeature' in metadata_df.columns and 'color' in metadata_df.columns:
     metadata_color_map = dict(zip(metadata_df['genofeature'], metadata_df['color']))
 else:
     metadata_color_map = {}
+if 'genofeature' in metadata_df.columns and 'marker' in metadata_df.columns:
+    metadata_marker_map = dict(zip(metadata_df['genofeature'], metadata_df['marker']))
+else:
+    metadata_marker_map = {}
+
+
+def add_genofeature_markers(ax, x_positions, segment_bottom, values, marker):
+    for x, bottom_value, height in zip(x_positions, segment_bottom, values):
+        if height > 0:
+            ax.plot(
+                x, bottom_value + height / 2,
+                marker=marker,
+                markersize=6,
+                markerfacecolor='white',
+                markeredgecolor='black',
+                markeredgewidth=0.8,
+                linestyle='None',
+                zorder=3
+            )
+
+
+def genofeature_legend_handles(genofeature_names, fallback_colors):
+    genofeature_set = set(genofeature_names)
+    ordered_names = [
+        name for name in metadata_df['genofeature'].drop_duplicates()
+        if name in genofeature_set
+    ]
+    ordered_names.extend(
+        name for name in genofeature_names
+        if name not in set(ordered_names)
+    )
+    fallback_color_map = dict(zip(genofeature_names, fallback_colors))
+    return [
+        Line2D(
+            [0], [0],
+            marker=metadata_marker_map.get(name, '.'),
+            color='black',
+            markerfacecolor=metadata_color_map.get(name, fallback_color_map[name]),
+            markeredgecolor='black',
+            linestyle='None',
+            markersize=7,
+            label=name
+        )
+        for name in ordered_names
+    ]
 
 if cluster_info.empty:
     save_placeholder(
@@ -183,19 +229,31 @@ if genofeature_cols:
     fig, ax = plt.subplots(figsize=(fig_w, 6))
     bottom = np.zeros(len(cluster_labels))
     fallback_colors = plt.cm.tab20(np.linspace(0, 1, max(1, len(genofeature_names))))
+    x_positions = np.arange(len(cluster_labels))
 
     for i, genofeature in enumerate(genofeature_names):
         values = genofeature_prop[:, i]
         color = metadata_color_map.get(genofeature, fallback_colors[i])
-        ax.bar(cluster_labels, values, bottom=bottom, width=0.8, color=color, label=genofeature)
+        marker = metadata_marker_map.get(genofeature, '.')
+        segment_bottom = bottom.copy()
+        ax.bar(x_positions, values, bottom=segment_bottom, width=0.8, color=color, label=genofeature)
+        add_genofeature_markers(ax, x_positions, segment_bottom, values, marker)
         bottom += values
 
     ax.set_title('Genofeature Composition by Cluster (Stacked Proportions)')
     ax.set_xlabel('Cluster ID')
     ax.set_ylabel('Proportion within cluster')
     ax.set_ylim(0, 1)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(cluster_labels)
     ax.tick_params(axis='x', rotation=45)
-    ax.legend(title='Genofeature', bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+    ax.legend(
+        handles=genofeature_legend_handles(genofeature_names, fallback_colors),
+        title='Genofeature',
+        bbox_to_anchor=(1.02, 1),
+        loc='upper left',
+        frameon=False
+    )
     plt.tight_layout()
     plt.savefig('hdbscan_genofeature_composition_stacked_bar.png', dpi=300)
     plt.close()
@@ -225,19 +283,31 @@ if genofeature_cols:
     fig, ax = plt.subplots(figsize=(fig_w, 6))
     bottom = np.zeros(len(cluster_labels))
     fallback_colors = plt.cm.tab20(np.linspace(0, 1, max(1, len(genofeature_names))))
+    x_positions = np.arange(len(cluster_labels))
 
     for i, genofeature in enumerate(genofeature_names):
         values = genofeature_global_prop[:, i]
         color = metadata_color_map.get(genofeature, fallback_colors[i])
-        ax.bar(cluster_labels, values, bottom=bottom, width=0.8, color=color, label=genofeature)
+        marker = metadata_marker_map.get(genofeature, '.')
+        segment_bottom = bottom.copy()
+        ax.bar(x_positions, values, bottom=segment_bottom, width=0.8, color=color, label=genofeature)
+        add_genofeature_markers(ax, x_positions, segment_bottom, values, marker)
         bottom += values
 
     ax.set_title('Genofeature Composition by Cluster (Height Scaled by Cluster Size)')
     ax.set_xlabel('Cluster ID')
     ax.set_ylabel('Proportion of all clustered members')
     ax.set_ylim(0, max(0.05, bottom.max() * 1.1 if len(bottom) else 0.05))
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(cluster_labels)
     ax.tick_params(axis='x', rotation=45)
-    ax.legend(title='Genofeature', bbox_to_anchor=(1.02, 1), loc='upper left', frameon=False)
+    ax.legend(
+        handles=genofeature_legend_handles(genofeature_names, fallback_colors),
+        title='Genofeature',
+        bbox_to_anchor=(1.02, 1),
+        loc='upper left',
+        frameon=False
+    )
     plt.tight_layout()
     plt.savefig('hdbscan_genofeature_composition_size_scaled_stacked_bar.png', dpi=300)
     plt.close()

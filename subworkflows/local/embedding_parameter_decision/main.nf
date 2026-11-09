@@ -12,11 +12,12 @@ workflow EMBEDDING_PARAMETER_DECISION {
         ch_cleaned_fasta
         
     main:
-    ch_filtered_tsv = ch_combined_tsv
-    ch_metadata = channel.fromPath(params.genofeature_metadata)
+    // Convert shared files to value channels before any process consumes them.
+    ch_filtered_tsv = ch_combined_tsv.first()
+    ch_metadata = channel.fromPath(params.genofeature_metadata, checkIfExists: true).first()
 
     EMBEDDING_PLAN(
-        ch_combined_tsv,
+        ch_filtered_tsv,
         ch_cleaned_fasta.map { meta, fasta -> fasta }.collect()
     )
 
@@ -46,7 +47,7 @@ workflow EMBEDDING_PARAMETER_DECISION {
 
     ch_embedding_dirs = ch_existing_embedding_dirs
         .mix(ch_embeddings.embeddings_dirs)
-        .unique()
+        .unique { dir -> "${dir.parent.parent.name}/${dir.parent.name}/${dir.name}" }
 
     def excluded_genofeatures = null
 
@@ -71,11 +72,11 @@ workflow EMBEDDING_PARAMETER_DECISION {
                     excluded_genofeatures,
                     nn,
                     md,
-                    "04_parameter_selection/coordinates/nn${nn}_md${md_tag}"
+                    "04_parameter_selection/coordinates/nn${nn}_md${md_tag}",
+                    "${params.outdir}/combined_datasets.tsv"
                 )
             }
         }
-    ch_generate_coordinates_inputs.view()
     GENERATE_COORDINATES(ch_generate_coordinates_inputs)
     ch_coordinate_dirs = GENERATE_COORDINATES.out.coordinates_files.collect()
 
@@ -103,16 +104,15 @@ workflow EMBEDDING_PARAMETER_DECISION {
 
     ch_plot_umap = PLOT_UMAP(
         ch_coord_files,
-        ch_filtered_tsv.first(),  
-        ch_metadata.first()    
+        ch_filtered_tsv,
+        ch_metadata
     )
 
     ch_umap = TILE_UMAPS(
         ch_plot_umap.plot.collect(),
-        ch_filtered_tsv.first(),
-        ch_metadata.first()
+        ch_filtered_tsv,
+        ch_metadata
     )
-
 
     ch_cluster_hdbscan_inputs = ch_coord_files
         .flatMap { nn, md_tag, coordFile, connsFile ->
@@ -122,8 +122,8 @@ workflow EMBEDDING_PARAMETER_DECISION {
     ch_cluster_hdbscan = CLUSTER_HDBSCAN(
         ch_cluster_hdbscan_inputs,
         ch_embedding_dirs.collect(),
-        ch_filtered_tsv.first(),
-        ch_metadata.first()
+        ch_filtered_tsv,
+        ch_metadata
     )
 
     ch_hbd = TILE_HDBSCAN(
